@@ -1,0 +1,11 @@
+# User-specific saved trust sets and window position (generated per-character)
+data/
+
+# Editor / OS junk
+*.swp
+*.swo
+*~
+*.bak
+Thumbs.db
+Desktop.ini
+.DS_Store
