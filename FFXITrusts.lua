@@ -10,28 +10,52 @@ local res    = require('resources')
 
 -- Pre-build set of every trust spell ID so the action-event listener can
 -- confirm a finished cast really was a trust (not, say, your /WHM Cure).
--- Also build a name → id lookup so we can answer "do I know this trust?"
--- before issuing the /ma command (saves us from a 30s timeout + retries
--- on UC trusts the player never unlocked).
+-- Also build a name → id-list lookup so we can answer "do I know this
+-- trust?" before issuing the /ma command (saves us from a 30s timeout +
+-- retries on UC trusts the player never unlocked).
+--
+-- Why id-LIST instead of single id: multiple trusts can share the same
+-- shorthand name. Examples from res/spells.lua:
+--   * Shantotto (id 896) and Shantotto II (id 1019) — id 1019's party_name
+--     is just "Shantotto" so a user with only Shantotto II in their book
+--     gets falsely flagged "not learned" if we only stored id 896.
+--   * "Semih Lafihna" en field has a space but party_name is "SemihLafihna"
+--     — saved sets that copy-pasted the party-name form fail the en lookup.
+-- We index every Trust under BOTH `en` and `party_name` (each lowercased
+-- too for case-insensitive saved-set names), and store a LIST of candidate
+-- ids per key. trust_is_owned() returns true if ANY candidate is learned.
 local trust_spell_ids = {}
 local trust_id_by_name = {}
+local function add_alias(key, id)
+    if not key or key == '' then return end
+    if not trust_id_by_name[key] then trust_id_by_name[key] = {} end
+    table.insert(trust_id_by_name[key], id)
+end
 for id, spell in pairs(res.spells) do
     if spell.type == 'Trust' then
         trust_spell_ids[id] = true
-        trust_id_by_name[spell.en] = id
-        -- Also index by lowercase to forgive case slips in saved sets
-        trust_id_by_name[spell.en:lower()] = id
+        add_alias(spell.en, id)
+        add_alias((spell.en or ''):lower(), id)
+        add_alias(spell.party_name, id)
+        add_alias((spell.party_name or ''):lower(), id)
     end
 end
 
 -- True if the character has the named trust learned (i.e. it's in their
 -- spell book). Returns false for any name we can't even find in resources.
+-- Walks the candidate-id list (see comment by trust_id_by_name build) so
+-- ambiguous shorthand names like "Shantotto" (matches id 896 Shantotto AND
+-- id 1019 Shantotto II via party_name) return true if EITHER variant is
+-- learned. "SemihLafihna" (no space, party_name form) also resolves.
 local function trust_is_owned(name)
     if not name or name == '' then return false end
-    local id = trust_id_by_name[name] or trust_id_by_name[name:lower()]
-    if not id then return false end
+    local ids = trust_id_by_name[name] or trust_id_by_name[name:lower()]
+    if not ids then return false end
     local known = windower.ffxi.get_spells() or {}
-    return known[id] == true
+    for _, id in ipairs(ids) do
+        if known[id] == true then return true end
+    end
+    return false
 end
 
 -- =============================================================================
