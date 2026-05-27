@@ -135,16 +135,43 @@ normalize_all_sets()
 -- Party introspection
 -- =============================================================================
 
+-- Return party-member names that are ACTUALLY trusts (not PCs).
+--
+-- The original implementation tried `mob.spawn_type == 16` which is
+-- backwards — 0x10 / 16 is the spawn_type for mobs, not PCs. Real
+-- players (spawn_type 0x01) failed that check and got captured into
+-- the saved set as if they were trusts, which then made //ft call try
+-- to /ma "PlayerName" and spam the chat with "spell not found."
+--
+-- Reliable fix: cross-check the name against the trust-name lookup
+-- table we already built from res.spells at startup. If the name
+-- matches a known Trust spell (`en` or `party_name`, case-insensitive),
+-- it's a trust; otherwise skip it.
+local function is_known_trust_name(name)
+    if not name or name == '' then return false end
+    return trust_id_by_name[name] ~= nil
+        or trust_id_by_name[name:lower()] ~= nil
+end
+
 local function get_current_trusts()
     local party = windower.ffxi.get_party()
     if not party then return {} end
-    local trusts = {}
+    local trusts, skipped = {}, {}
     for i = 1, 5 do
         local p = party['p'..i]
         if p and p.name and p.name ~= '' then
-            local is_pc = (p.mob and p.mob.spawn_type == 16)
-            if not is_pc then trusts[#trusts+1] = p.name end
+            if is_known_trust_name(p.name) then
+                trusts[#trusts+1] = p.name
+            else
+                -- Real PC (or some entity not in the trust spell list).
+                -- Track for an informational log so the user can see why
+                -- their party member was filtered out.
+                skipped[#skipped+1] = p.name
+            end
         end
+    end
+    if #skipped > 0 then
+        notify('Skipped non-trust party member(s): '..table.concat(skipped, ', '), 167)
     end
     return trusts
 end
