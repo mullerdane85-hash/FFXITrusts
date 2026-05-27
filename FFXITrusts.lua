@@ -408,16 +408,24 @@ local ui = {
     save_text        = nil,
     stop_bg          = nil,         -- red Stop button (overlays save while summoning)
     stop_text        = nil,
+    summon_bg        = nil,         -- green Summon button (right panel, acts on displayed set)
+    summon_text      = nil,
+    delete_bg        = nil,         -- red Delete button (right panel, two-click confirm)
+    delete_text      = nil,
     member_texts     = {},
     set_rows         = {},          -- { {bg, text, name, rect}, ... }
     -- state
     scroll           = 0,
     hover_set        = nil,
     selected_set     = nil,
+    right_panel_set  = nil,         -- name of set currently rendered on the right
+    delete_armed_at  = 0,           -- os.clock() of first delete click; 0 = not armed
     -- rects
     close_rect       = nil,
     save_rect        = nil,
     stop_rect        = nil,
+    summon_rect      = nil,
+    delete_rect      = nil,
     title_rect       = nil,
     scroll_up_rect   = nil,
     scroll_dn_rect   = nil,
@@ -486,6 +494,27 @@ local function build()
     ui.stop_rect = {x = px + PAD, y = btn_y, w = LEFT_W - 2*PAD, h = SAVE_BTN_H}
     ui.stop_bg:hide()
     ui.stop_text:hide()
+
+    -- Right-panel buttons: Summon (green) + Delete (red). Mirror Save's
+    -- vertical position so both panels' action rows line up. Buttons stay
+    -- hidden until a set is shown on the right (hover or click), at which
+    -- point render_members() reveals them.
+    local right_x  = px + LEFT_W + PAD
+    local right_w  = PANEL_W - LEFT_W - 2 * PAD
+    local btn_gap  = 8
+    local btn_w    = math.floor((right_w - btn_gap) / 2)
+    local del_x    = right_x + btn_w + btn_gap
+
+    ui.summon_bg   = make_bg(right_x, btn_y, btn_w, SAVE_BTN_H, C_SAVE_BG)
+    ui.summon_text = make_text('Summon', right_x + 18, btn_y + 8, 11, C_OK, true)
+    ui.summon_rect = {x = right_x, y = btn_y, w = btn_w, h = SAVE_BTN_H}
+
+    ui.delete_bg   = make_bg(del_x, btn_y, btn_w, SAVE_BTN_H, C_STOP_BG)
+    ui.delete_text = make_text('Delete', del_x + 22, btn_y + 8, 11, C_STOP_TXT, true)
+    ui.delete_rect = {x = del_x, y = btn_y, w = btn_w, h = SAVE_BTN_H}
+
+    ui.summon_bg:hide();   ui.summon_text:hide()
+    ui.delete_bg:hide();   ui.delete_text:hide()
 end
 
 -- Show/hide Stop vs Save depending on whether a summon is in progress.
@@ -532,7 +561,9 @@ local function hide_all()
                          ui.divider, ui.left_sect_text, ui.right_sect_text,
                          ui.scroll_up, ui.scroll_down,
                          ui.save_bg, ui.save_text,
-                         ui.stop_bg, ui.stop_text}) do
+                         ui.stop_bg, ui.stop_text,
+                         ui.summon_bg, ui.summon_text,
+                         ui.delete_bg, ui.delete_text}) do
         if el then el:hide() end
     end
     for _, row in ipairs(ui.set_rows) do
@@ -551,12 +582,46 @@ local function get_sorted_set_names()
     return names
 end
 
+-- Hide the right-panel action buttons. Called when nothing is on display
+-- (no hover, no selection) or when the set being shown was just deleted.
+local function hide_right_buttons()
+    if ui.summon_bg   then ui.summon_bg:hide()   end
+    if ui.summon_text then ui.summon_text:hide() end
+    if ui.delete_bg   then ui.delete_bg:hide()   end
+    if ui.delete_text then ui.delete_text:hide() end
+    ui.right_panel_set = nil
+    ui.delete_armed_at = 0
+end
+
+-- Show + label the Summon / Delete buttons for the currently-displayed set.
+-- Both act on whatever is on the right panel right now — that's either the
+-- hovered row or, when no row is hovered, the last-clicked (selected) row.
+-- Only resets the Delete-confirm state when the displayed set CHANGES, so
+-- normal mouse movement (which re-runs render_members repeatedly) doesn't
+-- disarm a pending "Confirm?" while the user reaches for the button.
+local function show_right_buttons(name)
+    if not ui.summon_bg then return end
+    local changed = (ui.right_panel_set ~= name)
+    ui.right_panel_set = name
+    ui.summon_bg:show()
+    ui.summon_text:show()
+    ui.delete_bg:show()
+    if changed then
+        ui.delete_text:text('Delete')
+        ui.delete_armed_at = 0
+    end
+    ui.delete_text:show()
+end
+
 local function render_members(name)
     -- destroy old
     for _, t in ipairs(ui.member_texts) do t:destroy() end
     ui.member_texts = {}
 
-    if not name or not settings.sets[name] then return end
+    if not name or not settings.sets[name] then
+        hide_right_buttons()
+        return
+    end
 
     local mx, my = compute_member_area_origin()
     local set    = settings.sets[name]
@@ -575,11 +640,14 @@ local function render_members(name)
         table.insert(ui.member_texts, t)
     end
 
-    -- "click to summon" hint, separated by a bigger gap
+    -- Hint reminds user the click selects (was: auto-summon). Actual
+    -- Summon/Delete are the dedicated buttons at the bottom of this panel.
     local hint_y = my + (LINE_H + 8) + #set * (LINE_H + 2) + 12
-    local hint   = make_text('(click to summon)', mx, hint_y, 9, C_DIM)
+    local hint   = make_text('(click row to select)', mx, hint_y, 9, C_DIM)
     hint:show()
     table.insert(ui.member_texts, hint)
+
+    show_right_buttons(name)
 end
 
 function ui_refresh()
@@ -660,6 +728,12 @@ local function hit_test(x, y)
     else
         r = ui.save_rect;  if r and x >= r.x and x <= r.x+r.w and y >= r.y and y <= r.y+r.h then return {type='save'} end
     end
+    -- Summon / Delete are only clickable when a set is being shown on the
+    -- right panel (i.e. their backgrounds are visible).
+    if ui.right_panel_set then
+        r = ui.summon_rect; if r and x >= r.x and x <= r.x+r.w and y >= r.y and y <= r.y+r.h then return {type='summon'} end
+        r = ui.delete_rect; if r and x >= r.x and x <= r.x+r.w and y >= r.y and y <= r.y+r.h then return {type='delete'} end
+    end
     r = ui.scroll_up_rect; if r and ui.scroll > 0 and x >= r.x and x <= r.x+r.w and y >= r.y and y <= r.y+r.h then return {type='scroll_up'} end
     r = ui.scroll_dn_rect; if r and ui.scroll_down and ui.scroll_down:visible() and x >= r.x and x <= r.x+r.w and y >= r.y and y <= r.y+r.h then return {type='scroll_down'} end
     for _, row in ipairs(ui.set_rows) do
@@ -710,6 +784,21 @@ local function reposition_all()
     if ui.stop_text then ui.stop_text:pos(px + PAD + 48, btn_y + 8) end
     ui.stop_rect = {x = px + PAD, y = btn_y, w = LEFT_W - 2*PAD, h = SAVE_BTN_H}
 
+    -- Right-panel buttons mirror the Save row vertically.
+    local right_x = px + LEFT_W + PAD
+    local right_w = PANEL_W - LEFT_W - 2 * PAD
+    local btn_gap = 8
+    local btn_w   = math.floor((right_w - btn_gap) / 2)
+    local del_x   = right_x + btn_w + btn_gap
+
+    if ui.summon_bg then ui.summon_bg:pos(right_x, btn_y) end
+    if ui.summon_text then ui.summon_text:pos(right_x + 18, btn_y + 8) end
+    ui.summon_rect = {x = right_x, y = btn_y, w = btn_w, h = SAVE_BTN_H}
+
+    if ui.delete_bg then ui.delete_bg:pos(del_x, btn_y) end
+    if ui.delete_text then ui.delete_text:pos(del_x + 22, btn_y + 8) end
+    ui.delete_rect = {x = del_x, y = btn_y, w = btn_w, h = SAVE_BTN_H}
+
     ui.scroll_up_rect = {x = px + PAD, y = list_y(), w = LEFT_W - 2*PAD, h = LINE_H}
 
     ui_refresh()
@@ -758,14 +847,57 @@ windower.register_event('mouse', function(mtype, x, y, delta, blocked)
         if not over then return false end
         local hit = hit_test(x, y)
         if hit then
+            -- Any click that isn't on Delete disarms the two-step confirm
+            -- so e.g. user-armed → clicks Summon → later clicks Delete won't
+            -- silently nuke the set on a single click.
+            if hit.type ~= 'delete' and ui.delete_armed_at ~= 0 then
+                ui.delete_armed_at = 0
+                if ui.delete_text and ui.right_panel_set then
+                    ui.delete_text:text('Delete')
+                end
+            end
             if hit.type == 'close' then ui.hide()
             elseif hit.type == 'save' then start_save()
             elseif hit.type == 'stop' then stop_summoning()
             elseif hit.type == 'scroll_up'   then ui.scroll = math.max(0, ui.scroll - 1); ui_refresh()
             elseif hit.type == 'scroll_down' then ui.scroll = ui.scroll + 1;              ui_refresh()
             elseif hit.type == 'set' then
+                -- Click selects the row but does NOT auto-summon. User then
+                -- presses Summon (or Delete) on the right panel to act on it.
                 ui.selected_set = hit.name
-                call_set(hit.name)
+                render_members(hit.name)
+            elseif hit.type == 'summon' then
+                if ui.right_panel_set then call_set(ui.right_panel_set) end
+            elseif hit.type == 'delete' then
+                local name = ui.right_panel_set
+                if name and settings.sets[name] then
+                    -- Two-click confirm. First click arms the button (label →
+                    -- "Confirm?") and starts a 3s timer. Second click while
+                    -- armed actually deletes. Click anywhere else or wait it
+                    -- out → disarms.
+                    local now = os.clock()
+                    if ui.delete_armed_at > 0 and (now - ui.delete_armed_at) <= 3.0 then
+                        settings.sets[name] = nil
+                        config.save(settings)
+                        notify('Deleted "'..name..'"', 158)
+                        if ui.selected_set == name then ui.selected_set = nil end
+                        ui.delete_armed_at = 0
+                        ui_refresh()
+                        render_members(ui.selected_set)   -- usually nil → hides buttons
+                    else
+                        ui.delete_armed_at = now
+                        if ui.delete_text then ui.delete_text:text('Confirm?') end
+                        local my_stamp = now
+                        coroutine.schedule(function()
+                            if ui.delete_armed_at == my_stamp then
+                                ui.delete_armed_at = 0
+                                if ui.delete_text and ui.right_panel_set then
+                                    ui.delete_text:text('Delete')
+                                end
+                            end
+                        end, 3.1)
+                    end
+                end
             elseif hit.type == 'title' then
                 ui.dragging = true
                 ui.drag_off.x = x - settings.pos.x
