@@ -59,8 +59,17 @@ The summon queue uses a **fixed time delay** between `/ma` commands —
 default 3 seconds, runtime-tunable via `//ft delay` **or via the
 `Delay: X.Xs [-] [+]` stepper in the window's header bar** (same UI
 pattern as FFXISpammer's TP toggle, clamped 1.0–10.0s in 0.5s steps).
-The addon does NOT listen for spell-finish events anymore; the delay
-is the cadence.
+The addon does listen for spell-finish events for one reason: to
+**track which trust spell you actually cast**. FFXI's party panel
+collapses Shantotto / Shantotto II / D. Shantotto (and every other
+`X` / `X II` family) to a single name, so we can't tell variants
+apart from the party data alone. The cast tracker records that you
+just cast e.g. Shantotto II, so when you click Save the captured
+set stores `Shantotto II` instead of guessing. Cleared on zone
+change since trusts dismiss anyway. Trusts summoned before this
+addon loaded fall through to the en + party_name + ownership
+heuristic, which prefers the longer-named variant (II / UC) when
+ambiguous.
 
 Before the queue even starts, the set is **filtered against your current
 party** — any trust already slotted is dropped so we don't waste 3 seconds

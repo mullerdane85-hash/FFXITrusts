@@ -153,6 +153,35 @@ local function is_known_trust_name(name)
         or trust_id_by_name[name:lower()] ~= nil
 end
 
+-- =============================================================================
+-- Recent-cast tracker.
+--
+-- FFXI's party panel collapses Shantotto / Shantotto II / D. Shantotto (and
+-- Lion / Lion II, Iroha / Iroha II, etc.) to a single display name, so when
+-- we read the party we genuinely can't tell which spell variant is there.
+-- The most reliable signal is the cast itself: when the action-event listener
+-- below sees the player successfully finish casting a Trust spell, we record
+-- the resulting spell.en under every alias that party-panel matching might
+-- look it up by (en + party_name, lowercased).
+--
+-- resolve_trust() checks this table first; only when no recent cast is
+-- known does it fall back to the en/party_name + ownership heuristic.
+-- Cleared on zone change because trusts dismiss anyway.
+-- =============================================================================
+
+local recent_casts = {}      -- [lowercased name] = canonical spell.en
+
+local function record_trust_cast(spell_id)
+    if not spell_id then return end
+    local spell = res.spells[spell_id]
+    if not spell or spell.type ~= 'Trust' or not spell.en then return end
+    local en = spell.en
+    recent_casts[en:lower()] = en
+    if spell.party_name and spell.party_name ~= '' then
+        recent_casts[spell.party_name:lower()] = en
+    end
+end
+
 -- Resolve a free-form trust name (party display, saved-set value,
 -- user-typed) to the canonical `spell.en` the player ACTUALLY owns,
 -- and report whether the input was ambiguous.
@@ -190,6 +219,16 @@ end
 local function resolve_trust(name)
     if not name or name == '' then return name, false end
     local lc  = name:lower()
+
+    -- Cast tracker check first. If we've recorded a cast that maps the
+    -- party-panel form to a specific spell.en (e.g. "shantotto" ->
+    -- "Shantotto II" because the player just cast it), trust that. The
+    -- player's own action is the most authoritative disambiguation
+    -- signal we have.
+    if recent_casts[lc] then
+        return recent_casts[lc], false
+    end
+
     local ids = trust_id_by_name[name] or trust_id_by_name[lc] or {}
     local known = windower.ffxi.get_spells() or {}
 
@@ -1451,6 +1490,31 @@ windower.register_event('keyboard', function(key, pressed, flags, blocked)
     if info and info.chat_open then return end      -- typing in chat — let the T through
 
     if ui.visible then ui.hide() else ui.show() end
+end)
+
+-- =============================================================================
+-- Action-event listener: track which trust spell the player actually finishes
+-- casting, so the disambiguation logic can pick the right variant when the
+-- party panel collapses "Shantotto II" -> "Shantotto" (etc.).
+--
+-- Windower action categories of interest:
+--   4 = spell finish (cast completed successfully)
+-- We deliberately ignore 8 (spell begin) and category 14 (interrupt) — we
+-- only want SUCCESSFUL casts in the tracker.
+-- =============================================================================
+windower.register_event('action', function(act)
+    if not act or act.category ~= 4 then return end
+    local player = windower.ffxi.get_player()
+    if not player or act.actor_id ~= player.id then return end
+    if act.param and trust_spell_ids[act.param] then
+        record_trust_cast(act.param)
+    end
+end)
+
+-- Trusts dismiss on zone change; clear the tracker so stale entries from a
+-- previous zone can't override a fresh party.
+windower.register_event('zone change', function()
+    recent_casts = {}
 end)
 
 windower.register_event('load', function()
