@@ -391,6 +391,15 @@ local C_LIST      = { 225, 225, 230 }                              -- list items
 local C_DIM       = { 155, 160, 175 }                              -- dim text
 local C_OK        = { 130, 220, 140 }                              -- green button text
 local C_CLOSE     = { 230, 170, 170 }                              -- close X
+local C_STEP_BG   = { alpha=210, red=40,  green=80,  blue=120 }    -- delay +/- stepper bg
+local C_STEP_TXT  = { 255, 255, 255 }                              -- delay +/- stepper text
+
+-- Bounds for the delay-between-trusts stepper. Trust casts take ~6s; the
+-- min is forgiving for fast-cast players, the max is just "this is silly."
+-- Step half a second per click so the user can dial it in.
+local DELAY_MIN  = 1.0
+local DELAY_MAX  = 10.0
+local DELAY_STEP = 0.5
 
 local function make_bg(x, y, w, h, c)
     return images.new({
@@ -439,6 +448,11 @@ local ui = {
     summon_text      = nil,
     delete_bg        = nil,         -- red Delete button (right panel, two-click confirm)
     delete_text      = nil,
+    delay_label      = nil,         -- "Delay: 3.0s" in the header
+    delay_minus_bg   = nil,
+    delay_minus_text = nil,
+    delay_plus_bg    = nil,
+    delay_plus_text  = nil,
     member_texts     = {},
     set_rows         = {},          -- { {bg, text, name, rect}, ... }
     -- state
@@ -453,6 +467,8 @@ local ui = {
     stop_rect        = nil,
     summon_rect      = nil,
     delete_rect      = nil,
+    delay_minus_rect = nil,
+    delay_plus_rect  = nil,
     title_rect       = nil,
     scroll_up_rect   = nil,
     scroll_dn_rect   = nil,
@@ -491,6 +507,29 @@ local function build()
     ui.close_rect  = {x = px + PANEL_W - PAD - 14, y = py + 2, w = PAD + 16, h = HEADER_H - 4}
     ui.title_rect  = {x = px, y = py, w = PANEL_W - PAD - 16, h = HEADER_H}
 
+    -- Delay stepper in the header (right of title, left of close X). Matches
+    -- FFXISpammer's TP toggle pattern: "Delay: 3.0s [-] [+]". Adjusts the
+    -- settings.delay value live (clamped DELAY_MIN..DELAY_MAX, step 0.5s).
+    -- hit_test orders these BEFORE title_rect so clicks here don't fall
+    -- through to "start drag."
+    local d_btn_w  = 18
+    local d_btn_h  = 18
+    local d_lbl_w  = 78
+    local d_gap    = 4
+    local d_btn_y  = py + math.floor((HEADER_H - d_btn_h) / 2)
+    local d_plus_x = px + PANEL_W - PAD - 14 - 6 - d_btn_w       -- gap from close-X click rect
+    local d_minus_x= d_plus_x - d_gap - d_btn_w
+    local d_lbl_x  = d_minus_x - d_gap - d_lbl_w
+
+    ui.delay_label      = make_text(string.format('Delay: %.1fs', settings.delay or 3.0),
+                                    d_lbl_x, py + 8, 11, C_LIST, true)
+    ui.delay_minus_bg   = make_bg(d_minus_x, d_btn_y, d_btn_w, d_btn_h, C_STEP_BG)
+    ui.delay_minus_text = make_text('-', d_minus_x + 6, d_btn_y + 1, 12, C_STEP_TXT, true)
+    ui.delay_plus_bg    = make_bg(d_plus_x,  d_btn_y, d_btn_w, d_btn_h, C_STEP_BG)
+    ui.delay_plus_text  = make_text('+', d_plus_x + 5,  d_btn_y + 1, 12, C_STEP_TXT, true)
+    ui.delay_minus_rect = {x = d_minus_x, y = d_btn_y, w = d_btn_w, h = d_btn_h}
+    ui.delay_plus_rect  = {x = d_plus_x,  y = d_btn_y, w = d_btn_w, h = d_btn_h}
+
     -- Vertical divider between left and right panels
     ui.divider = make_bg(px + LEFT_W, py + HEADER_H + 1, 1,
                          TOTAL_H - HEADER_H - 1, C_DIVIDER)
@@ -516,7 +555,7 @@ local function build()
     -- Stop button — same slot as Save, only visible while summoning is active.
     -- Created hidden; show_all() / refresh() flip visibility based on state.
     ui.stop_bg   = make_bg(px + PAD, btn_y, LEFT_W - 2*PAD, SAVE_BTN_H, C_STOP_BG)
-    ui.stop_text = make_text('STOP  (' .. settings.delay .. 's)',
+    ui.stop_text = make_text(string.format('STOP  (%.1fs)', settings.delay or 3.0),
                              px + PAD + 48, btn_y + 8, 11, C_STOP_TXT, true)
     ui.stop_rect = {x = px + PAD, y = btn_y, w = LEFT_W - 2*PAD, h = SAVE_BTN_H}
     ui.stop_bg:hide()
@@ -578,6 +617,12 @@ local function show_all()
     ui.right_sect_text:show()
     ui.save_bg:show()
     ui.save_text:show()
+    -- Delay stepper in the header
+    if ui.delay_label      then ui.delay_label:show()      end
+    if ui.delay_minus_bg   then ui.delay_minus_bg:show()   end
+    if ui.delay_minus_text then ui.delay_minus_text:show() end
+    if ui.delay_plus_bg    then ui.delay_plus_bg:show()    end
+    if ui.delay_plus_text  then ui.delay_plus_text:show()  end
     -- Show Stop instead of Save if a summon is currently running
     refresh_action_button()
 end
@@ -590,7 +635,10 @@ local function hide_all()
                          ui.save_bg, ui.save_text,
                          ui.stop_bg, ui.stop_text,
                          ui.summon_bg, ui.summon_text,
-                         ui.delete_bg, ui.delete_text}) do
+                         ui.delete_bg, ui.delete_text,
+                         ui.delay_label,
+                         ui.delay_minus_bg, ui.delay_minus_text,
+                         ui.delay_plus_bg, ui.delay_plus_text}) do
         if el then el:hide() end
     end
     for _, row in ipairs(ui.set_rows) do
@@ -747,6 +795,10 @@ local function hit_test(x, y)
     if not ui.visible then return nil end
     local r
     r = ui.close_rect; if r and x >= r.x and x <= r.x+r.w and y >= r.y and y <= r.y+r.h then return {type='close'} end
+    -- Delay stepper sits inside title_rect's bounds — test it FIRST so the
+    -- buttons don't fall through to "title click = start drag."
+    r = ui.delay_minus_rect; if r and x >= r.x and x <= r.x+r.w and y >= r.y and y <= r.y+r.h then return {type='delay_minus'} end
+    r = ui.delay_plus_rect;  if r and x >= r.x and x <= r.x+r.w and y >= r.y and y <= r.y+r.h then return {type='delay_plus'}  end
     -- While summoning is active, the bottom slot is the Stop button. Test
     -- it FIRST so a click during summon doesn't fall through to the Save
     -- rect (same coordinates).
@@ -828,6 +880,23 @@ local function reposition_all()
 
     ui.scroll_up_rect = {x = px + PAD, y = list_y(), w = LEFT_W - 2*PAD, h = LINE_H}
 
+    -- Delay stepper in the header
+    local d_btn_w  = 18
+    local d_btn_h  = 18
+    local d_lbl_w  = 78
+    local d_gap    = 4
+    local d_btn_y  = py + math.floor((HEADER_H - d_btn_h) / 2)
+    local d_plus_x = px + PANEL_W - PAD - 14 - 6 - d_btn_w
+    local d_minus_x= d_plus_x - d_gap - d_btn_w
+    local d_lbl_x  = d_minus_x - d_gap - d_lbl_w
+    if ui.delay_label      then ui.delay_label:pos(d_lbl_x, py + 8) end
+    if ui.delay_minus_bg   then ui.delay_minus_bg:pos(d_minus_x, d_btn_y) end
+    if ui.delay_minus_text then ui.delay_minus_text:pos(d_minus_x + 6, d_btn_y + 1) end
+    if ui.delay_plus_bg    then ui.delay_plus_bg:pos(d_plus_x,  d_btn_y) end
+    if ui.delay_plus_text  then ui.delay_plus_text:pos(d_plus_x + 5,  d_btn_y + 1) end
+    ui.delay_minus_rect = {x = d_minus_x, y = d_btn_y, w = d_btn_w, h = d_btn_h}
+    ui.delay_plus_rect  = {x = d_plus_x,  y = d_btn_y, w = d_btn_w, h = d_btn_h}
+
     ui_refresh()
 end
 
@@ -888,6 +957,28 @@ windower.register_event('mouse', function(mtype, x, y, delta, blocked)
             elseif hit.type == 'stop' then stop_summoning()
             elseif hit.type == 'scroll_up'   then ui.scroll = math.max(0, ui.scroll - 1); ui_refresh()
             elseif hit.type == 'scroll_down' then ui.scroll = ui.scroll + 1;              ui_refresh()
+            elseif hit.type == 'delay_minus' then
+                settings.delay = math.max(DELAY_MIN, (settings.delay or 3.0) - DELAY_STEP)
+                config.save(settings)
+                if ui.delay_label then
+                    ui.delay_label:text(string.format('Delay: %.1fs', settings.delay))
+                end
+                -- Keep the Stop button's idle-state caption in sync (it
+                -- shows "STOP (Xs)" before a summon starts).
+                if ui.stop_text and not summoning.active then
+                    ui.stop_text:text(string.format('STOP  (%.1fs)', settings.delay))
+                end
+                notify(string.format('Delay: %.1fs (between trust casts)', settings.delay), 158)
+            elseif hit.type == 'delay_plus' then
+                settings.delay = math.min(DELAY_MAX, (settings.delay or 3.0) + DELAY_STEP)
+                config.save(settings)
+                if ui.delay_label then
+                    ui.delay_label:text(string.format('Delay: %.1fs', settings.delay))
+                end
+                if ui.stop_text and not summoning.active then
+                    ui.stop_text:text(string.format('STOP  (%.1fs)', settings.delay))
+                end
+                notify(string.format('Delay: %.1fs (between trust casts)', settings.delay), 158)
             elseif hit.type == 'set' then
                 -- Click selects the row but does NOT auto-summon. User then
                 -- presses Summon (or Delete) on the right panel to act on it.
@@ -1084,8 +1175,16 @@ windower.register_event('addon command', function(cmd, ...)
     elseif cmd == 'delay' then
         local d = tonumber(args[1])
         if not d then notify('Current delay: '..settings.delay..'s. Usage: //ft delay <seconds>', 167); return end
+        -- Clamp to the same bounds the UI stepper uses so slash and stepper
+        -- can't disagree about what's a valid value.
+        d = math.max(DELAY_MIN, math.min(DELAY_MAX, d))
         settings.delay = d
         config.save(settings)
+        -- Sync the header stepper label + the idle Stop caption
+        if ui.delay_label then ui.delay_label:text(string.format('Delay: %.1fs', settings.delay)) end
+        if ui.stop_text and not summoning.active then
+            ui.stop_text:text(string.format('STOP  (%.1fs)', settings.delay))
+        end
         notify('Summon delay set to '..d..'s.')
 
     elseif cmd == 'prefix' then

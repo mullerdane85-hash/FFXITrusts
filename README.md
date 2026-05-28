@@ -56,8 +56,11 @@ list when you have more than fits on screen.
 ## Queue behavior
 
 The summon queue uses a **fixed time delay** between `/ma` commands —
-default 3 seconds, runtime-tunable via `//ft delay`. The addon does NOT
-listen for spell-finish events anymore; the delay is the cadence.
+default 3 seconds, runtime-tunable via `//ft delay` **or via the
+`Delay: X.Xs [-] [+]` stepper in the window's header bar** (same UI
+pattern as FFXISpammer's TP toggle, clamped 1.0–10.0s in 0.5s steps).
+The addon does NOT listen for spell-finish events anymore; the delay
+is the cadence.
 
 Two safety checks fire before each `/ma`:
 
