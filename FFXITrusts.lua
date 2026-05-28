@@ -532,7 +532,9 @@ local function fire_current()
     end
 
     local spell = spell_for(trust)
-    notify('  ['..summoning.index..'/'..#summoning.queue..'] /ma "'..spell..'" <me>', 158)
+    -- The log line is just visual feedback for the user; the actual cast
+    -- command on the next line is what FFXI receives.
+    notify('  ['..summoning.index..'/'..#summoning.queue..'] Summoning: '..spell, 158)
     windower.send_command('input /ma "'..spell..'" <me>')
 
     -- Fixed-timer advance. settings.delay seconds after each /ma, move to
