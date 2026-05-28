@@ -62,7 +62,16 @@ pattern as FFXISpammer's TP toggle, clamped 1.0–10.0s in 0.5s steps).
 The addon does NOT listen for spell-finish events anymore; the delay
 is the cadence.
 
-Two safety checks fire before each `/ma`:
+Before the queue even starts, the set is **filtered against your current
+party** — any trust already slotted is dropped so we don't waste 3 seconds
+per redundant `/ma` (FFXI silently bounces those anyway). Name aliases
+("Semih Lafihna" vs "SemihLafihna", "Shantotto" vs "Shantotto II") all
+resolve to spell-ID candidates from the resource table, so it doesn't
+matter which form your set was saved in. If every trust in the set is
+already in your party you get a friendly "nothing to summon" line and
+the queue doesn't run.
+
+Two safety checks then fire before each `/ma` that does go out:
 
 1. **Unowned-trust check.** If the spell isn't in your spell book
    (e.g. a `(UC)` trust you never unlocked), the queue prints

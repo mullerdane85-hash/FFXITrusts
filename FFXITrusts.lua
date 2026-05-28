@@ -268,6 +268,37 @@ local function fire_current()
     end, settings.delay)
 end
 
+-- Collect the spell IDs of every trust currently in the player's party.
+-- Returned as a set ({[id] = true}). Uses the trust_id_by_name table built
+-- at startup so name aliases ("Semih Lafihna" en vs "SemihLafihna"
+-- party_name) all resolve to the same candidate IDs.
+local function party_trust_ids()
+    local ids = {}
+    local party = windower.ffxi.get_party()
+    if not party then return ids end
+    for i = 1, 5 do
+        local p = party['p'..i]
+        if p and p.name and p.name ~= '' and is_known_trust_name(p.name) then
+            local cands = trust_id_by_name[p.name]
+                       or trust_id_by_name[p.name:lower()] or {}
+            for _, id in ipairs(cands) do ids[id] = true end
+        end
+    end
+    return ids
+end
+
+-- True if the named trust resolves to any id currently in the party set.
+-- (Aliases handled the same way trust_is_owned does it.)
+local function name_already_in_party(name, in_party_ids)
+    if not name or name == '' then return false end
+    local cands = trust_id_by_name[name]
+               or trust_id_by_name[name:lower()] or {}
+    for _, id in ipairs(cands) do
+        if in_party_ids[id] then return true end
+    end
+    return false
+end
+
 local function call_set(name)
     if summoning.active then
         notify('Already summoning "'..summoning.set_name..'" ('
@@ -283,14 +314,35 @@ local function call_set(name)
     end
     settings.sets[name] = set        -- cache cleaned version
 
+    -- Skip anyone already in the party. Re-summoning a slotted trust is a
+    -- no-op anyway (FFXI silently bounces the /ma) so filtering early
+    -- saves us settings.delay seconds per redundant cast.
+    local in_party = party_trust_ids()
+    local queue, skipped = {}, {}
+    for _, t in ipairs(set) do
+        if name_already_in_party(t, in_party) then
+            table.insert(skipped, t)
+        else
+            table.insert(queue, t)
+        end
+    end
+
+    if #queue == 0 then
+        notify('All trusts in "'..name..'" are already in your party. Nothing to summon.', 158)
+        return
+    end
+    if #skipped > 0 then
+        notify('Already in party (skipped): '..table.concat(skipped, ', '), 158)
+    end
+
     summoning.active        = true
     summoning.set_name      = name
-    summoning.queue         = set
+    summoning.queue         = queue
     summoning.index         = 1
     summoning.retries       = 0
     summoning.timeout_token = summoning.timeout_token + 1   -- invalidate any stale
 
-    notify('Calling "'..name..'" — '..#set..' trusts ('..settings.delay..'s between casts).')
+    notify('Calling "'..name..'" — '..#queue..' trust(s) to summon ('..settings.delay..'s between casts).')
     refresh_action_button()       -- show Stop button immediately
     fire_current()
 end
