@@ -189,37 +189,60 @@ end
 -- Returns (resolved_en, was_ambiguous_among_owned).
 local function resolve_trust(name)
     if not name or name == '' then return name, false end
-    local ids = trust_id_by_name[name] or trust_id_by_name[name:lower()] or {}
+    local lc  = name:lower()
+    local ids = trust_id_by_name[name] or trust_id_by_name[lc] or {}
     local known = windower.ffxi.get_spells() or {}
 
-    -- Owned candidates (en strings, no duplicates)
-    local owned, seen = {}, {}
+    -- Sort each candidate by *how* it matched the input:
+    --
+    --   `en_match`    — spell.en == name (case-insensitive). The input
+    --                   is being precise; this is the spell the user
+    --                   means UNLESS they only own the other variant.
+    --   `pn_only`     — spell.en differs from name and the match came
+    --                   via party_name. This is the party-panel form
+    --                   ("Lion" for both Lion and Lion II) so we
+    --                   should reach for the longer en.
+    --
+    -- We only consider candidates the player actually owns.
+    local owned_en_match, owned_pn_only = {}, {}
+    local seen = {}
     for _, id in ipairs(ids) do
         if known[id] then
             local spell = res.spells[id]
             if spell and spell.en and not seen[spell.en] then
                 seen[spell.en] = true
-                table.insert(owned, spell.en)
+                if spell.en == name or spell.en:lower() == lc then
+                    table.insert(owned_en_match, spell.en)
+                else
+                    table.insert(owned_pn_only, spell.en)
+                end
             end
         end
     end
 
-    if #owned == 1 then
-        return owned[1], false
+    -- 1. Exactly one owned match through en, nothing else — unambiguous.
+    if #owned_en_match == 1 and #owned_pn_only == 0 then
+        return owned_en_match[1], false
     end
 
-    if #owned > 1 then
-        -- Exact input match wins
-        for _, en in ipairs(owned) do
-            if en == name then return en, true end
-        end
-        -- Otherwise prefer the longest en (II / (UC) / etc.)
-        table.sort(owned, function(a, b) return #a > #b end)
-        return owned[1], true
+    -- 2. en-match owned: input was precise ("Lion" really means base
+    -- Lion). Respect it. Flag ambiguity only if another variant is
+    -- also owned, so the user knows we made a choice they can override.
+    if #owned_en_match >= 1 then
+        return owned_en_match[1], #owned_pn_only > 0
     end
 
-    -- No owned candidates — fall back to the longest-en candidate so a
-    -- saved set still has a real spell name to summon once unlocked.
+    -- 3. No en match owned but party-name variants are. Input was the
+    -- party-panel form; prefer the longest en, which biases toward
+    -- "Lion II" / "Yoran-Oran (UC)" over their bare counterparts.
+    if #owned_pn_only > 0 then
+        table.sort(owned_pn_only, function(a, b) return #a > #b end)
+        return owned_pn_only[1], #owned_pn_only > 1
+    end
+
+    -- 4. Player owns nothing in the family yet. Fall back to longest en
+    -- so a saved set still has a real spell name once the player
+    -- unlocks anything from the family.
     local fallback, fallback_seen = {}, {}
     for _, id in ipairs(ids) do
         local spell = res.spells[id]
@@ -230,7 +253,7 @@ local function resolve_trust(name)
     end
     if #fallback > 0 then
         for _, en in ipairs(fallback) do
-            if en == name then return en, false end
+            if en == name or en:lower() == lc then return en, false end
         end
         table.sort(fallback, function(a, b) return #a > #b end)
         return fallback[1], false
