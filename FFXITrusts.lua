@@ -154,49 +154,99 @@ local function is_known_trust_name(name)
 end
 
 -- Resolve a free-form trust name (party display, saved-set value,
--- user-typed) to the canonical `spell.en` from res.spells.
+-- user-typed) to the canonical `spell.en` the player ACTUALLY owns,
+-- and report whether the input was ambiguous.
 --
--- This matters most for Unity Concord trusts. FFXI's party panel shows
--- them under their bare name ("Yoran-Oran") but the actual spell ID
--- has en="Yoran-Oran (UC)" — and /ma is exact-match, so without the
--- (UC) suffix the cast bounces. The fix:
+-- Why this is trickier than it looks: FFXI ships several pairs / sets
+-- of trusts that share a `party_name` but differ in `en`:
 --
---   1. If the input already matches a Trust spell's en exactly, leave
---      it (don't keep churning a name that's already canonical).
---   2. Otherwise look up the candidate IDs from trust_id_by_name and
---      pick the first one the player actually OWNS. Owning UC but not
---      regular -> we pick the UC variant. Owning regular but not UC ->
---      we pick the regular. Owning both (e.g. Shantotto + Shantotto II
---      via shared party_name) -> we keep whichever candidate appears
---      first, which is the existing behavior pre-fix.
---   3. As a last resort, fall back to the first candidate so we at
---      least emit a real spell name.
-local function canonical_trust_name(name)
-    if not name or name == '' then return name end
-    -- Already canonical? Don't churn it.
-    for _, spell in pairs(res.spells) do
-        if spell.type == 'Trust' and spell.en == name then return name end
-    end
+--   spell.en          spell.party_name   notes
+--   --------          ----------------   -----
+--   Shantotto         Shantotto          base BLM
+--   Shantotto II      Shantotto          stronger variant — same party_name!
+--   D. Shantotto      D.Shantotto        a third "Shantotto" variant
+--   Lion              Lion               base
+--   Lion II           Lion               stronger
+--   Iroha / Iroha II, Tenzen / Tenzen II, Prishe / Prishe II, etc.
+--   Yoran-Oran (UC)   Yoran-Oran         party hides the UC suffix
+--
+-- So an input like "Shantotto" doesn't tell us which Shantotto — we
+-- have to look at what the player owns. Algorithm:
+--
+--   1. Collect every Trust spell whose en or party_name matches the
+--      input (via trust_id_by_name, which is already case-insensitive).
+--   2. Among those, gather the ones the player has in their spell book.
+--   3. If exactly one owned candidate: use its en, no ambiguity.
+--   4. If multiple owned: prefer an exact en match to the input first
+--      (input is authoritative if the player typed/saved the precise
+--      name); otherwise prefer the LONGEST en, which favours "II" /
+--      "(UC)" variants over plain ones. Flag ambiguity so the caller
+--      can notify the user.
+--   5. If zero owned: fall back to the longest-en candidate so the
+--      saved name still resolves to a real spell when the player
+--      eventually unlocks one.
+--
+-- Returns (resolved_en, was_ambiguous_among_owned).
+local function resolve_trust(name)
+    if not name or name == '' then return name, false end
     local ids = trust_id_by_name[name] or trust_id_by_name[name:lower()] or {}
     local known = windower.ffxi.get_spells() or {}
+
+    -- Owned candidates (en strings, no duplicates)
+    local owned, seen = {}, {}
     for _, id in ipairs(ids) do
         if known[id] then
             local spell = res.spells[id]
-            if spell and spell.en then return spell.en end
+            if spell and spell.en and not seen[spell.en] then
+                seen[spell.en] = true
+                table.insert(owned, spell.en)
+            end
         end
     end
-    -- Fallback: first candidate even if not owned (so the saved name
-    -- still resolves to a real spell once the player unlocks it).
-    if ids[1] and res.spells[ids[1]] and res.spells[ids[1]].en then
-        return res.spells[ids[1]].en
+
+    if #owned == 1 then
+        return owned[1], false
     end
-    return name
+
+    if #owned > 1 then
+        -- Exact input match wins
+        for _, en in ipairs(owned) do
+            if en == name then return en, true end
+        end
+        -- Otherwise prefer the longest en (II / (UC) / etc.)
+        table.sort(owned, function(a, b) return #a > #b end)
+        return owned[1], true
+    end
+
+    -- No owned candidates — fall back to the longest-en candidate so a
+    -- saved set still has a real spell name to summon once unlocked.
+    local fallback, fallback_seen = {}, {}
+    for _, id in ipairs(ids) do
+        local spell = res.spells[id]
+        if spell and spell.en and not fallback_seen[spell.en] then
+            fallback_seen[spell.en] = true
+            table.insert(fallback, spell.en)
+        end
+    end
+    if #fallback > 0 then
+        for _, en in ipairs(fallback) do
+            if en == name then return en, false end
+        end
+        table.sort(fallback, function(a, b) return #a > #b end)
+        return fallback[1], false
+    end
+    return name, false
+end
+
+local function canonical_trust_name(name)
+    local resolved, _ = resolve_trust(name)
+    return resolved
 end
 
 local function get_current_trusts()
     local party = windower.ffxi.get_party()
     if not party then return {} end
-    local trusts, skipped = {}, {}
+    local trusts, skipped, ambiguous = {}, {}, {}
     for i = 1, 5 do
         local p = party['p'..i]
         if p and p.name and p.name ~= '' then
@@ -204,7 +254,12 @@ local function get_current_trusts()
                 -- Canonicalize the name so e.g. UC trusts get their
                 -- "(UC)" suffix back before being saved. Party display
                 -- shows the bare name; /ma needs the exact en form.
-                trusts[#trusts+1] = canonical_trust_name(p.name)
+                local resolved, was_ambig = resolve_trust(p.name)
+                trusts[#trusts+1] = resolved
+                if was_ambig and resolved ~= p.name then
+                    table.insert(ambiguous,
+                        string.format('"%s" -> "%s"', p.name, resolved))
+                end
             else
                 -- Real PC (or some entity not in the trust spell list).
                 -- Track for an informational log so the user can see why
@@ -215,6 +270,14 @@ local function get_current_trusts()
     end
     if #skipped > 0 then
         notify('Skipped non-trust party member(s): '..table.concat(skipped, ', '), 167)
+    end
+    if #ambiguous > 0 then
+        -- Heads-up so the user can override via //ft edit if we guessed wrong.
+        -- (Shantotto vs Shantotto II is the classic case — party panel shows
+        -- "Shantotto" for both, and we default to the longer-named variant.)
+        notify('Ambiguous trust(s); picked the longer-named variant:', 167)
+        for _, a in ipairs(ambiguous) do notify('  '..a, 167) end
+        notify('Use //ft edit <set> <slot> <name> if you wanted the other variant.', 167)
     end
     return trusts
 end
