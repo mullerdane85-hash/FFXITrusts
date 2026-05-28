@@ -4,6 +4,14 @@ A Windower 4 addon for managing **named trust party loadouts** with a
 GSUI-style window. Save the current trust party, name it, and resummon
 the whole set with one click.
 
+> **Credit:** the trust-variant disambiguation here (Shantotto vs
+> Shantotto II vs D. Shantotto, Lion vs Lion II, every other II / UC
+> family) builds directly on the `mob.models[1] → spell.en` table and
+> the `spawn_type == 14` filter from **from20020516**'s `Trusts` addon
+> (BSD 3-Clause). Without that work the variant problem would still
+> be guesswork. Full credit and BSD attribution preserved in the
+> source.
+
 ## Install
 
 ```
