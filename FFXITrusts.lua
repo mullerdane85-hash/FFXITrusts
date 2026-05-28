@@ -153,6 +153,46 @@ local function is_known_trust_name(name)
         or trust_id_by_name[name:lower()] ~= nil
 end
 
+-- Resolve a free-form trust name (party display, saved-set value,
+-- user-typed) to the canonical `spell.en` from res.spells.
+--
+-- This matters most for Unity Concord trusts. FFXI's party panel shows
+-- them under their bare name ("Yoran-Oran") but the actual spell ID
+-- has en="Yoran-Oran (UC)" — and /ma is exact-match, so without the
+-- (UC) suffix the cast bounces. The fix:
+--
+--   1. If the input already matches a Trust spell's en exactly, leave
+--      it (don't keep churning a name that's already canonical).
+--   2. Otherwise look up the candidate IDs from trust_id_by_name and
+--      pick the first one the player actually OWNS. Owning UC but not
+--      regular -> we pick the UC variant. Owning regular but not UC ->
+--      we pick the regular. Owning both (e.g. Shantotto + Shantotto II
+--      via shared party_name) -> we keep whichever candidate appears
+--      first, which is the existing behavior pre-fix.
+--   3. As a last resort, fall back to the first candidate so we at
+--      least emit a real spell name.
+local function canonical_trust_name(name)
+    if not name or name == '' then return name end
+    -- Already canonical? Don't churn it.
+    for _, spell in pairs(res.spells) do
+        if spell.type == 'Trust' and spell.en == name then return name end
+    end
+    local ids = trust_id_by_name[name] or trust_id_by_name[name:lower()] or {}
+    local known = windower.ffxi.get_spells() or {}
+    for _, id in ipairs(ids) do
+        if known[id] then
+            local spell = res.spells[id]
+            if spell and spell.en then return spell.en end
+        end
+    end
+    -- Fallback: first candidate even if not owned (so the saved name
+    -- still resolves to a real spell once the player unlocks it).
+    if ids[1] and res.spells[ids[1]] and res.spells[ids[1]].en then
+        return res.spells[ids[1]].en
+    end
+    return name
+end
+
 local function get_current_trusts()
     local party = windower.ffxi.get_party()
     if not party then return {} end
@@ -161,7 +201,10 @@ local function get_current_trusts()
         local p = party['p'..i]
         if p and p.name and p.name ~= '' then
             if is_known_trust_name(p.name) then
-                trusts[#trusts+1] = p.name
+                -- Canonicalize the name so e.g. UC trusts get their
+                -- "(UC)" suffix back before being saved. Party display
+                -- shows the bare name; /ma needs the exact en form.
+                trusts[#trusts+1] = canonical_trust_name(p.name)
             else
                 -- Real PC (or some entity not in the trust spell list).
                 -- Track for an informational log so the user can see why
@@ -313,6 +356,23 @@ local function call_set(name)
         return
     end
     settings.sets[name] = set        -- cache cleaned version
+
+    -- Canonicalize every saved name before queuing — fixes legacy sets
+    -- that captured the bare display name for UC trusts ("Yoran-Oran"
+    -- instead of "Yoran-Oran (UC)"). The party-match below and the
+    -- /ma command both need the exact res.spells.en form.
+    -- We save back to disk if any names actually changed, so the legacy
+    -- set self-heals after the first call and doesn't need this fix to
+    -- re-run on every subsequent call.
+    local touched = false
+    for i, t in ipairs(set) do
+        local c = canonical_trust_name(t)
+        if c ~= t then set[i] = c; touched = true end
+    end
+    if touched then
+        settings.sets[name] = set
+        config.save(settings)
+    end
 
     -- Skip anyone already in the party. Re-summoning a slotted trust is a
     -- no-op anyway (FFXI silently bounces the /ma) so filtering early
