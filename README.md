@@ -139,6 +139,17 @@ client-side without something interrupting (movement, damage, /heal).
 - `data/settings.xml` — your saved sets and window position
   (gitignored; generated per-character)
 
+## Credits
+
+The disambiguation between trust variants (Shantotto vs Shantotto II vs
+D. Shantotto, Lion vs Lion II, Iroha vs Iroha II, every other family
+with shared `party_name`s) relies on the `mob.models[1] -> spell.en`
+table maintained by **from20020516** in their `Trusts` addon (BSD
+3-Clause). That addon discovered both the spawn-type tag (14 for trust
+party members) and the per-trust model IDs. The model table is reused
+here so FFXITrusts can identify the exact variant from any trust in
+your party, even ones summoned before this addon loaded.
+
 ## Author
 
 Jason (2026). Part of the FFXIWindower personal setup.

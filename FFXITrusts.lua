@@ -169,6 +169,70 @@ end
 -- Cleared on zone change because trusts dismiss anyway.
 -- =============================================================================
 
+-- =============================================================================
+-- Model → spell.en table.
+--
+-- Every trust has a unique 3D model ID, which the game exposes through
+-- mob.models[1]. Reading that and looking it up here gives us the exact
+-- spell.en (including "II" / "(UC)" suffixes) with zero ambiguity. This
+-- is more reliable than party_name matching or cast tracking because it
+-- works for trusts summoned BEFORE this addon loaded too — they're still
+-- in your party with their models intact.
+--
+-- Sourced verbatim from `from20020516`'s `Trusts` addon (BSD 3-Clause):
+--     https://github.com/from20020516/Trusts
+-- The mapping there is hand-curated; we credit and reuse it.
+-- =============================================================================
+local TRUST_MODEL_TO_EN = {
+    [3000] = "Shantotto",       [3001] = "Naji",            [3002] = "Kupipi",
+    [3003] = "Excenmille",      [3004] = "Ayame",           [3005] = "Nanaa Mihgo",
+    [3006] = "Curilla",         [3007] = "Volker",          [3008] = "Ajido-Marujido",
+    [3009] = "Trion",           [3010] = "Zeid",            [3011] = "Lion",
+    [3012] = "Tenzen",          [3013] = "Mihli Aliapoh",   [3014] = "Valaineral",
+    [3015] = "Joachim",         [3016] = "Naja Salaheem",   [3017] = "Prishe",
+    [3018] = "Ulmia",           [3019] = "Shikaree Z",      [3020] = "Cherukiki",
+    [3021] = "Iron Eater",      [3022] = "Gessho",          [3023] = "Gadalar",
+    [3024] = "Rainemard",       [3025] = "Ingrid",          [3026] = "Lehko Habhoka",
+    [3027] = "Nashmeira",       [3028] = "Zazarg",          [3029] = "Ovjang",
+    [3030] = "Mnejing",         [3031] = "Sakura",          [3032] = "Luzaf",
+    [3033] = "Najelith",        [3034] = "Aldo",            [3035] = "Moogle",
+    [3036] = "Fablinix",        [3037] = "Maat",            [3038] = "D. Shantotto",
+    [3039] = "Star Sibyl",      [3040] = "Karaha-Baruha",   [3041] = "Cid",
+    [3042] = "Gilgamesh",       [3043] = "Areuhat",         [3044] = "Semih Lafihna",
+    [3045] = "Elivira",         [3046] = "Noillurie",       [3047] = "Lhu Mhakaracca",
+    [3048] = "Ferreous Coffin", [3049] = "Lilisette",       [3050] = "Mumor",
+    [3051] = "Uka Totlihn",     [3052] = "Excenmille [S]",  [3053] = "Klara",
+    [3054] = "Romaa Mihgo",     [3055] = "Kuyin Hathdenna", [3056] = "Rahal",
+    [3057] = "Koru-Moru",       [3058] = "Pieuje (UC)",     [3059] = "Flaviria (UC)",
+    [3060] = "I. Shield (UC)",  [3061] = "Apururu (UC)",    [3062] = "Jakoh (UC)",
+    [3063] = "Ayame (UC)",      [3064] = "Maat (UC)",       [3065] = "Aldo (UC)",
+    [3066] = "Naja (UC)",       [3067] = "Babban",          [3068] = "Abenzio",
+    [3069] = "Rughadjeen",      [3070] = "Kukki-Chebukki",  [3071] = "Margret",
+    [3072] = "Chacharoon",      [3073] = "Lhe Lhangavo",    [3074] = "Arciela",
+    [3075] = "Mayakov",         [3076] = "Qultada",         [3077] = "Adelheid",
+    [3078] = "Amchuchu",        [3079] = "Brygid",          [3080] = "Mildaurion",
+    [3081] = "Lion II",         [3082] = "Prishe II",       [3083] = "Nashmeira II",
+    [3084] = "Lilisette II",    [3085] = "Arciela II",      [3086] = "Zeid II",
+    [3087] = "Halver",          [3088] = "Rongelouts",      [3089] = "Leonoyne",
+    [3090] = "Maximilian",      [3091] = "Kayeel-Payeel",   [3092] = "Robel-Akbel",
+    [3093] = "Kupofried",       [3094] = "Selh'teus",       [3095] = "Yoran-Oran (UC)",
+    [3096] = "Sylvie (UC)",     [3097] = "Tenzen II",       [3098] = "Abquhbah",
+    [3099] = "Balamor",         [3100] = "August",          [3101] = "Rosulatia",
+    [3102] = "Ingrid II",       [3103] = "Teodor",          [3104] = "Mumor II",
+    [3105] = "Ullegore",        [3106] = "Makki-Chebukki",  [3107] = "King of Hearts",
+    [3108] = "Morimar",         [3109] = "Darrcuiln",       [3110] = "Shantotto II",
+    [3111] = "Iroha",           [3112] = "Iroha II",        [3113] = "AAHM",
+    [3114] = "AAEV",            [3115] = "AAMR",            [3116] = "AATT",
+    [3117] = "AAGK",            [3118] = "Ygnas",           [3119] = "Cornelia",
+    [3120] = "Monberaux",       [3121] = "Matsui-P",
+}
+
+-- Spawn-type 14 is the FFXI engine's tag for trust ("alter ego") party
+-- members — distinct from PCs (1) and mobs (16). This is what
+-- from20020516's Trusts addon uses as the PC filter and it's the
+-- definitive answer (no name guessing required).
+local SPAWN_TYPE_TRUST = 14
+
 local recent_casts = {}      -- [lowercased name] = canonical spell.en
 
 local function record_trust_cast(spell_id)
@@ -305,6 +369,19 @@ local function canonical_trust_name(name)
     return resolved
 end
 
+-- Try to identify a party member's exact trust variant via mob.models[1].
+-- This is the most reliable signal — each trust has a unique 3D model.
+-- Returns the canonical spell.en, or nil if the member isn't a trust or
+-- we don't have a model entry (newer trust SE added since the table was
+-- compiled).
+local function trust_en_from_mob(p)
+    if not p or not p.mob then return nil end
+    if p.mob.spawn_type ~= SPAWN_TYPE_TRUST then return nil end
+    local models = p.mob.models
+    if not models or not models[1] then return nil end
+    return TRUST_MODEL_TO_EN[models[1]]
+end
+
 local function get_current_trusts()
     local party = windower.ffxi.get_party()
     if not party then return {} end
@@ -312,10 +389,16 @@ local function get_current_trusts()
     for i = 1, 5 do
         local p = party['p'..i]
         if p and p.name and p.name ~= '' then
-            if is_known_trust_name(p.name) then
-                -- Canonicalize the name so e.g. UC trusts get their
-                -- "(UC)" suffix back before being saved. Party display
-                -- shows the bare name; /ma needs the exact en form.
+            -- Path 1: mob.models[1] -> exact variant via the table. This is
+            -- the gold standard — works regardless of what the party panel
+            -- displays and regardless of whether the addon saw the cast.
+            local from_model = trust_en_from_mob(p)
+            if from_model then
+                trusts[#trusts+1] = from_model
+            elseif is_known_trust_name(p.name) then
+                -- Path 2: fall back to name-based resolution (cast tracker
+                -- first, then en/party_name + ownership heuristic). Used
+                -- for any trust whose model isn't in our table.
                 local resolved, was_ambig = resolve_trust(p.name)
                 trusts[#trusts+1] = resolved
                 if was_ambig and resolved ~= p.name then
@@ -324,8 +407,6 @@ local function get_current_trusts()
                 end
             else
                 -- Real PC (or some entity not in the trust spell list).
-                -- Track for an informational log so the user can see why
-                -- their party member was filtered out.
                 skipped[#skipped+1] = p.name
             end
         end
@@ -334,9 +415,6 @@ local function get_current_trusts()
         notify('Skipped non-trust party member(s): '..table.concat(skipped, ', '), 167)
     end
     if #ambiguous > 0 then
-        -- Heads-up so the user can override via //ft edit if we guessed wrong.
-        -- (Shantotto vs Shantotto II is the classic case — party panel shows
-        -- "Shantotto" for both, and we default to the longer-named variant.)
         notify('Ambiguous trust(s); picked the longer-named variant:', 167)
         for _, a in ipairs(ambiguous) do notify('  '..a, 167) end
         notify('Use //ft edit <set> <slot> <name> if you wanted the other variant.', 167)
