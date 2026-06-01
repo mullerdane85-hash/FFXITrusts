@@ -1631,9 +1631,32 @@ windower.register_event('zone change', function()
     recent_casts = {}
 end)
 
+-- Login-screen guard helper. Windower auto-loads addons before the
+-- player picks a character; without this check the trust window
+-- ghosts on top of the SE login UI.
+local function _player_in_game()
+    local info = windower.ffxi.get_info()
+    return info and info.logged_in == true
+end
+
 windower.register_event('load', function()
     notify('v'.._addon.version..' loaded. Press T (or //ft) to open the window.')
-    if settings.visible then ui.show() end
+    if settings.visible and _player_in_game() then ui.show() end
+end)
+
+windower.register_event('login', function()
+    -- Build the window on entering the world if the user had it open
+    -- when they last logged out / unloaded.
+    coroutine.schedule(function()
+        if settings.visible then ui.show() end
+    end, 2)
+end)
+
+windower.register_event('logout', function()
+    -- Hide on return-to-character-select WITHOUT touching
+    -- settings.visible, so the window comes back at the next login if
+    -- the user had it open before.
+    if ui.visible then hide_all(); ui.visible = false end
 end)
 
 windower.register_event('unload', function()
