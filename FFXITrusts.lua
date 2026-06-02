@@ -1,5 +1,22 @@
+--[[
+Copyright © 2026, mullerdane85-hash
+All rights reserved. BSD-3-Clause. See LICENSE.
+
+FFXITrusts — single-window Trust manager. Build named Trust party
+templates ("LowMan", "EXP", "Reisenjima", whatever) by clicking the
+five seats and picking from a searchable Trust list; recall a saved
+set by clicking its name in the sidebar to /ma every Trust in order
+with delay handling and Unity-Concord retries.
+
+Owns:
+    * Settings file with all saved Trust sets (data/<character>.xml)
+    * Window state (position, visibility, scroll)
+    * T-key keyboard hotkey for show/hide (chat-aware: suppressed
+      while chat / macro editor is open).
+]]
+
 _addon.name     = 'FFXITrusts'
-_addon.author   = 'Jason'
+_addon.author   = 'mullerdane85-hash'
 _addon.version  = '1.1'
 _addon.commands = {'ft', 'ftrusts'}
 
