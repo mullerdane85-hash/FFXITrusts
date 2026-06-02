@@ -1639,6 +1639,23 @@ local function _player_in_game()
     return info and info.logged_in == true
 end
 
+-- Auto-hide the trust window while chat / macro editor is open. Without
+-- this the panel ghosts on top of the in-game text overlay. We don't
+-- touch settings.visible, so the window comes back automatically as
+-- soon as the text input closes.
+local _was_input_open = false
+windower.register_event('prerender', function()
+    local info = windower.ffxi.get_info()
+    local input_open = info and info.chat_open == true
+    if input_open and not _was_input_open then
+        if ui.visible then hide_all(); ui.visible = false end
+        _was_input_open = true
+    elseif (not input_open) and _was_input_open then
+        if settings.visible and _player_in_game() then ui.show() end
+        _was_input_open = false
+    end
+end)
+
 windower.register_event('load', function()
     notify('v'.._addon.version..' loaded. Press T (or //ft) to open the window.')
     if settings.visible and _player_in_game() then ui.show() end
