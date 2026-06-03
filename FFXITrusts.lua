@@ -92,7 +92,40 @@ local defaults = {
         default = L{'Valaineral', 'Mihli Aliapoh', 'Tenzen', 'Adelheid', 'Joachim'},
     },
 }
-local settings = config.load(defaults)
+-- Defensive load. A previous version of this addon could leave the
+-- settings.xml in a half-written / malformed state when the XML
+-- serializer crashed mid-save on a numeric-keyed array
+-- (see safe_save_settings() below for the root-cause fix). If the
+-- file is corrupted, config.load throws something like
+--   libs/config.lua:99: XML error, line 17: Mismatched tag ending: </X
+-- which would prevent the addon from loading at all -- the user
+-- can't even get to a slash command to recover.
+--
+-- We wrap the load in pcall, and on failure rename the broken file
+-- aside (so the user can salvage it later) and start fresh from
+-- defaults. The next safe_save_settings() will write a clean file.
+local settings
+do
+    local ok, loaded = pcall(config.load, defaults)
+    if ok and loaded then
+        settings = loaded
+    else
+        -- Move the broken file aside if it exists. windower.addon_path
+        -- ends with a slash; settings.xml lives at <path>data/settings.xml.
+        local path = windower.addon_path .. 'data/settings.xml'
+        local broken = path .. '.broken-' .. os.time()
+        os.rename(path, broken)
+        windower.add_to_chat(167,
+            '[FFXITrusts] settings.xml was corrupted and could not be parsed: '
+            .. tostring(loaded))
+        windower.add_to_chat(167,
+            '[FFXITrusts] Broken file moved to ' .. broken
+            .. ' . Starting with defaults.')
+        -- Re-load from defaults now that no file is present.
+        local ok2, fresh = pcall(config.load, defaults)
+        settings = (ok2 and fresh) or defaults
+    end
+end
 if type(settings.sets) ~= 'table' then settings.sets = {} end
 
 local function notify(msg, color)
