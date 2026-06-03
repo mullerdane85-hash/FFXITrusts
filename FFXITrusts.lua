@@ -1747,14 +1747,22 @@ local function _player_in_game()
     return info and info.logged_in == true
 end
 
--- Auto-hide the trust window while chat / macro editor is open. Without
--- this the panel ghosts on top of the in-game text overlay. We don't
--- touch settings.visible, so the window comes back automatically as
--- soon as the text input closes.
+-- Auto-hide the trust window while ANY FFXI text-entry surface is open:
+-- chat bar, macro editor, search comment, /tell input. Two signals:
+--   1. windower.ffxi.get_info().chat_open  (chat bar)
+--   2. _last_blocked_at -- last keyboard event with blocked=true. The
+--      macro editor doesn't set chat_open but routes keys through
+--      FFXI's intercept, so blocked=true fires on each keystroke.
+-- settings.visible is preserved; window reappears once both clear.
 local _was_input_open = false
+local _last_blocked_at = 0
+windower.register_event('keyboard', function(dik, pressed, flags, blocked)
+    if blocked then _last_blocked_at = os.clock() end
+end)
 windower.register_event('prerender', function()
     local info = windower.ffxi.get_info()
-    local input_open = info and info.chat_open == true
+    local input_open = (info and info.chat_open == true)
+                       or (os.clock() - _last_blocked_at) < 1.5
     if input_open and not _was_input_open then
         if ui.visible then hide_all(); ui.visible = false end
         _was_input_open = true
