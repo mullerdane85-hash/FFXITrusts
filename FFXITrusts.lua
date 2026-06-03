@@ -101,9 +101,15 @@ end
 
 -- =============================================================================
 -- normalize_set: take whatever shape a saved set is in (Lua array, L{} list,
--- or string-keyed table from XML parse) and return a clean 1..N array.
+-- string-keyed table from XML parse, or the slot1..slotN format we now use
+-- on save) and return a clean 1..N array.
+--
 -- Windower's config lib parses <1>..<5> children as string keys "1".."5" in
--- some versions, which breaks #set and ipairs. We fix that here.
+-- some versions. The newer versions choke on integer-keyed XML elements
+-- entirely with `libs/xml.lua:387: "type" is not defined for numbers` --
+-- which is why safe_save_settings() below now writes slot1..slot5 instead.
+-- This function accepts every historical format so legacy settings.xml
+-- files keep loading after the upgrade.
 -- =============================================================================
 local function normalize_set(set)
     if type(set) ~= 'table' then return {} end
@@ -117,10 +123,14 @@ local function normalize_set(set)
         if #out > 0 then return out end
     end
 
-    -- Otherwise look for numeric-string keys "1".."N" (or any numeric)
+    -- Otherwise look for numeric-string keys "1".."N" or the new
+    -- "slot1".."slotN" string-keyed format safe_save_settings writes.
     local pairs_list = {}
     for k, v in pairs(set) do
         local idx = tonumber(k)
+        if not idx and type(k) == 'string' then
+            idx = tonumber(k:match('^slot(%d+)$'))
+        end
         if idx and type(v) == 'string' and v ~= '' then
             pairs_list[idx] = v
         end
@@ -134,6 +144,54 @@ local function normalize_set(set)
     return clean
 end
 
+-- =============================================================================
+-- safe_save_settings: drop-in replacement for config.save(settings).
+--
+-- Windower's XML serializer (libs/xml.lua) crashes with
+-- `xml.lua:387: "type" is not defined for numbers` when asked to write
+-- a table that has purely numeric keys. settings.sets[name] is exactly
+-- that shape -- a Lua array of trust names -- so every commit_save,
+-- delete, rename, or per-slot edit hit the crash.
+--
+-- Workaround: snapshot the in-memory arrays, swap each one out for a
+-- slot1..slotN STRING-keyed equivalent for the duration of the save,
+-- then restore the arrays so every other code path keeps working with
+-- #set / ipairs() / set[i] without caring. The reload path already
+-- knows how to read the slot<N> shape (normalize_set above).
+--
+-- Wrapped in pcall so a future Windower XML quirk failing for some
+-- other reason notifies the user instead of bringing the whole addon
+-- down mid-toggle.
+-- =============================================================================
+local function safe_save_settings()
+    if type(settings.sets) ~= 'table' then
+        local ok, err = pcall(config.save, settings)
+        if not ok then notify('Settings save failed: '..tostring(err), 167) end
+        return ok
+    end
+    local snapshot = {}
+    for name, set in pairs(settings.sets) do
+        if type(set) == 'table' and #set > 0 then
+            snapshot[name] = set
+            local stringkeyed = {}
+            for i, v in ipairs(set) do
+                stringkeyed['slot'..i] = v
+            end
+            settings.sets[name] = stringkeyed
+        end
+    end
+    local ok, err = pcall(config.save, settings)
+    -- ALWAYS restore the array form, even if the save failed -- otherwise
+    -- the UI render that runs next frame would see slot1=... shapes.
+    for name, set in pairs(snapshot) do
+        settings.sets[name] = set
+    end
+    if not ok then
+        notify('Settings save failed: '..tostring(err), 167)
+    end
+    return ok
+end
+
 -- Walk through every saved set on load and convert it to clean arrays.
 local function normalize_all_sets()
     local changed = false
@@ -144,7 +202,7 @@ local function normalize_all_sets()
             changed = true
         end
     end
-    if changed then config.save(settings) end
+    if changed then safe_save_settings() end
 end
 normalize_all_sets()
 
@@ -627,7 +685,7 @@ local function call_set(name)
     end
     if touched then
         settings.sets[name] = set
-        config.save(settings)
+        safe_save_settings()
     end
 
     -- Skip anyone already in the party. Re-summoning a slotted trust is a
@@ -698,7 +756,7 @@ local function commit_save(name)
         return
     end
     settings.sets[name] = pending_party
-    config.save(settings)
+    safe_save_settings()
     notify('Saved "'..name..'": '..table.concat(pending_party, ', '))
     pending_party = nil
     if ui_refresh then ui_refresh() end
@@ -1327,7 +1385,7 @@ windower.register_event('mouse', function(mtype, x, y, delta, blocked)
             elseif hit.type == 'scroll_down' then ui.scroll = ui.scroll + 1;              ui_refresh()
             elseif hit.type == 'delay_minus' then
                 settings.delay = math.max(DELAY_MIN, (settings.delay or 3.0) - DELAY_STEP)
-                config.save(settings)
+                safe_save_settings()
                 if ui.delay_label then
                     ui.delay_label:text(string.format('Delay: %.1fs', settings.delay))
                 end
@@ -1339,7 +1397,7 @@ windower.register_event('mouse', function(mtype, x, y, delta, blocked)
                 notify(string.format('Delay: %.1fs (between trust casts)', settings.delay), 158)
             elseif hit.type == 'delay_plus' then
                 settings.delay = math.min(DELAY_MAX, (settings.delay or 3.0) + DELAY_STEP)
-                config.save(settings)
+                safe_save_settings()
                 if ui.delay_label then
                     ui.delay_label:text(string.format('Delay: %.1fs', settings.delay))
                 end
@@ -1364,7 +1422,7 @@ windower.register_event('mouse', function(mtype, x, y, delta, blocked)
                     local now = os.clock()
                     if ui.delete_armed_at > 0 and (now - ui.delete_armed_at) <= 3.0 then
                         settings.sets[name] = nil
-                        config.save(settings)
+                        safe_save_settings()
                         notify('Deleted "'..name..'"', 158)
                         if ui.selected_set == name then ui.selected_set = nil end
                         ui.delete_armed_at = 0
@@ -1395,7 +1453,7 @@ windower.register_event('mouse', function(mtype, x, y, delta, blocked)
     elseif mtype == 2 then          -- left release
         if ui.dragging then
             ui.dragging = false
-            config.save(settings)
+            safe_save_settings()
             return true
         end
         if over then return true end
@@ -1441,14 +1499,14 @@ ui.show = function()
     ui_refresh()
     ui.visible = true
     settings.visible = true
-    config.save(settings)
+    safe_save_settings()
 end
 
 ui.hide = function()
     hide_all()
     ui.visible = false
     settings.visible = false
-    config.save(settings)
+    safe_save_settings()
 end
 
 -- =============================================================================
@@ -1492,7 +1550,7 @@ windower.register_event('addon command', function(cmd, ...)
         local name = table.concat(args, ' ')
         if settings.sets[name] then
             settings.sets[name] = nil
-            config.save(settings)
+            safe_save_settings()
             notify('Deleted "'..name..'"'); ui_refresh()
         else notify('No set "'..name..'"', 167) end
 
@@ -1503,7 +1561,7 @@ windower.register_event('addon command', function(cmd, ...)
         if not settings.sets[oldname] then notify('No set "'..oldname..'"', 167); return end
         settings.sets[newname] = settings.sets[oldname]
         settings.sets[oldname] = nil
-        config.save(settings)
+        safe_save_settings()
         notify('Renamed "'..oldname..'" → "'..newname..'"')
         ui_refresh()
 
@@ -1528,7 +1586,7 @@ windower.register_event('addon command', function(cmd, ...)
         local old = set[idx]
         set[idx] = newname
         settings.sets[setname] = set
-        config.save(settings)
+        safe_save_settings()
         notify('"'..setname..'" slot '..idx..': "'..old..'" → "'..newname..'"')
         ui_refresh()
 
@@ -1547,7 +1605,7 @@ windower.register_event('addon command', function(cmd, ...)
         -- can't disagree about what's a valid value.
         d = math.max(DELAY_MIN, math.min(DELAY_MAX, d))
         settings.delay = d
-        config.save(settings)
+        safe_save_settings()
         -- Sync the header stepper label + the idle Stop caption
         if ui.delay_label then ui.delay_label:text(string.format('Delay: %.1fs', settings.delay)) end
         if ui.stop_text and not summoning.active then
@@ -1576,13 +1634,13 @@ windower.register_event('addon command', function(cmd, ...)
             settings.prefix = v..': '
             notify('Prefix set to "'..settings.prefix..'"')
         end
-        config.save(settings)
+        safe_save_settings()
 
     elseif cmd == 'pos' then
         if #args == 2 then
             settings.pos.x = tonumber(args[1])
             settings.pos.y = tonumber(args[2])
-            config.save(settings)
+            safe_save_settings()
             if ui.visible then reposition_all() end
         else notify('Usage: //ft pos <x> <y>') end
 
