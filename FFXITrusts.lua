@@ -196,29 +196,106 @@ end
 -- other reason notifies the user instead of bringing the whole addon
 -- down mid-toggle.
 -- =============================================================================
-local function safe_save_settings()
-    if type(settings.sets) ~= 'table' then
-        local ok, err = pcall(config.save, settings)
-        if not ok then notify('Settings save failed: '..tostring(err), 167) end
-        return ok
+-- Make a save-safe copy of one table value: pure-string keys, recursively
+-- cleaned. Used for the swap step below. Lists / Sets / arrays all collapse
+-- to slot1..slotN; mixed-key tables get every numeric key re-prefixed.
+local function _clean_table(val)
+    local cls = (class and class(val))
+    if cls == 'List' or cls == 'Set' then
+        local out = {}
+        for i, v in ipairs(val) do
+            out['slot'..i] = (type(v) == 'table') and _clean_table(v) or v
+        end
+        return out
     end
-    local snapshot = {}
-    for name, set in pairs(settings.sets) do
-        if type(set) == 'table' and #set > 0 then
-            snapshot[name] = set
-            local stringkeyed = {}
-            for i, v in ipairs(set) do
-                stringkeyed['slot'..i] = v
+    local has_str, has_num = false, false
+    for k in pairs(val) do
+        if type(k) == 'number' then has_num = true
+        elseif type(k) == 'string' then has_str = true
+        end
+        if has_str and has_num then break end
+    end
+    if has_num and not has_str then
+        local out = {}
+        local n = #val
+        if n > 0 then
+            for i = 1, n do
+                local v = val[i]
+                out['slot'..i] = (type(v) == 'table') and _clean_table(v) or v
             end
-            settings.sets[name] = stringkeyed
+        else
+            for k, v in pairs(val) do
+                if type(k) == 'number' then
+                    out['slot'..k] = (type(v) == 'table') and _clean_table(v) or v
+                end
+            end
+        end
+        return out
+    elseif has_num and has_str then
+        local out = {}
+        for k, v in pairs(val) do
+            local sk = (type(k) == 'number') and ('slot'..k) or tostring(k)
+            out[sk] = (type(v) == 'table') and _clean_table(v) or v
+        end
+        return out
+    end
+    -- Pure string-keyed: clone, recurse into values that are themselves tables.
+    local out = {}
+    for k, v in pairs(val) do
+        out[k] = (type(v) == 'table') and _clean_table(v) or v
+    end
+    return out
+end
+
+-- Walk every table reachable from `settings` BFS-style. For each child table
+-- that has problematic keys, swap it for a cleaned copy and remember the
+-- swap so we can put the originals back after the save. Skip the root
+-- itself (config.save needs the table identity preserved -- see
+-- settings_map[t] lookup at config.lua:335) and walk only string-keyed
+-- ancestors so we don't recurse into a List's internal metadata.
+local function _problematic(t)
+    local cls = (class and class(t))
+    if cls == 'List' or cls == 'Set' then return true end
+    local has_str, has_num = false, false
+    for k in pairs(t) do
+        if type(k) == 'number' then has_num = true
+        elseif type(k) == 'string' then has_str = true
+        end
+        if has_str and has_num then return true end
+    end
+    return has_num   -- pure-array: still convert
+end
+
+local function safe_save_settings()
+    -- swaps: list of { parent, key, original } tuples to restore after save.
+    local swaps = {}
+    local function walk(t)
+        -- Iterate a snapshot of keys so in-place reassignment below doesn't
+        -- skip entries on the next iteration.
+        local keys = {}
+        for k in pairs(t) do keys[#keys+1] = k end
+        for _, k in ipairs(keys) do
+            local v = t[k]
+            if type(v) == 'table' then
+                if _problematic(v) then
+                    swaps[#swaps+1] = { parent = t, key = k, original = v }
+                    t[k] = _clean_table(v)
+                else
+                    walk(v)
+                end
+            end
         end
     end
+    walk(settings)
+
     local ok, err = pcall(config.save, settings)
-    -- ALWAYS restore the array form, even if the save failed -- otherwise
-    -- the UI render that runs next frame would see slot1=... shapes.
-    for name, set in pairs(snapshot) do
-        settings.sets[name] = set
+
+    -- ALWAYS restore originals, even on failure, so the next render loop
+    -- sees the live shapes (#set / ipairs() / set[i]) unchanged.
+    for _, swap in ipairs(swaps) do
+        swap.parent[swap.key] = swap.original
     end
+
     if not ok then
         notify('Settings save failed: '..tostring(err), 167)
     end
