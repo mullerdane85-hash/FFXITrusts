@@ -145,6 +145,20 @@ end
 -- files keep loading after the upgrade.
 -- =============================================================================
 local function normalize_set(set)
+    -- CSV string. Windower's config.lua serializes Lists / Sets as
+    -- <name>val1,val2,...</name>, and config.load reads that leaf back as
+    -- a plain string until the addon's defaults declared <name> as a L{}
+    -- in advance. We don't (sets[name] is dynamic), so the loader hands us
+    -- a string and our render code's ipairs() blew up. Split it back into
+    -- the array shape every other code path expects.
+    if type(set) == 'string' then
+        local out = {}
+        for raw in (set..','):gmatch('([^,]*),') do
+            local trimmed = raw:gsub('^%s+',''):gsub('%s+$','')
+            if trimmed ~= '' then out[#out+1] = trimmed end
+        end
+        return out
+    end
     if type(set) ~= 'table' then return {} end
 
     -- If it's already a proper 1..N array, just copy the strings.
@@ -310,12 +324,26 @@ local function safe_save_settings()
     return ok
 end
 
--- Walk through every saved set on load and convert it to clean arrays.
+-- Walk every saved set on load and convert it to a clean array. Anything
+-- that isn't already a same-shape array (CSV strings out of XML, slot<n>
+-- string-keyed tables from an older save, or string-keyed table dumps) is
+-- replaced with the normalized list -- otherwise the render code's
+-- ipairs(set) would crash with "table expected, got string" the moment the
+-- panel opened. We need to compare against the original to know when to
+-- rewrite, since #clean > 0 isn't enough on its own.
 local function normalize_all_sets()
     local changed = false
     for name, set in pairs(settings.sets) do
         local clean = normalize_set(set)
-        if #clean > 0 then
+        local needs_rewrite = (type(set) ~= 'table') or (#clean ~= #set)
+        if not needs_rewrite and type(set) == 'table' then
+            -- Element-wise compare to catch tables that lost values during
+            -- a prior broken save / load round trip.
+            for i, v in ipairs(set) do
+                if clean[i] ~= v then needs_rewrite = true; break end
+            end
+        end
+        if needs_rewrite and #clean > 0 then
             settings.sets[name] = clean
             changed = true
         end
