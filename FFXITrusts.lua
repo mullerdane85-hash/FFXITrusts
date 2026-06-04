@@ -196,66 +196,49 @@ end
 -- other reason notifies the user instead of bringing the whole addon
 -- down mid-toggle.
 -- =============================================================================
--- Make a save-safe copy of one table value: pure-string keys, recursively
--- cleaned. Used for the swap step below. Lists / Sets / arrays all collapse
--- to slot1..slotN; mixed-key tables get every numeric key re-prefixed.
-local function _clean_table(val)
-    local cls = (class and class(val))
-    if cls == 'List' or cls == 'Set' then
-        local out = {}
-        for i, v in ipairs(val) do
-            out['slot'..i] = (type(v) == 'table') and _clean_table(v) or v
-        end
-        return out
-    end
+-- Why the prior swap-to-string-keyed approach broke after settings.xml had
+-- been loaded once:
+--
+-- The first time the addon ran, settings.sets[name] was a plain Lua table
+-- with numeric keys -- raw arrays the user's UI created. The XML serializer
+-- (xml.lua:387) chokes on those, so we swapped them to slot1..slotN form
+-- for the save and put the original back. That worked for the FIRST save.
+--
+-- BUT: once settings.xml was written, the NEXT config.load() turned each
+-- <default>CSV string</default> entry into a Windower L{} List object.
+-- Lists serialize fine -- the CSV path in libs/config.lua:449 handles them
+-- directly -- so they don't need our intervention. Worse, when we swap a
+-- pre-existing List to a plain string-keyed dict, the save-path's
+-- amend() (libs/tables.lua:213) recursively merges OUR slot1..slotN keys
+-- INTO the existing List's numeric keys. Result: a single table with
+-- [1]..[5] AND ['slot1']..['slot5'] keys, which is exactly what
+-- libs/config.lua:431's table.sort can't compare.
+--
+-- The correct rule:
+--   * List / Set wrappers: leave alone -- they have a working CSV path.
+--   * Plain Lua tables with pure numeric keys: convert to a L{} list
+--     so the CSV path picks them up next save. This is a one-way
+--     normalization; we do NOT restore the plain shape, because the
+--     L{} list IS a valid #set / ipairs() / set[i] target.
+--   * Tables with mixed string+number keys (pathological): we still
+--     swap-and-restore to slot1..slotN string keys since those have
+--     no CSV path.
+
+local function _is_pure_numeric_plain(t)
+    local cls = (class and class(t))
+    if cls == 'List' or cls == 'Set' then return false end
     local has_str, has_num = false, false
-    for k in pairs(val) do
+    for k in pairs(t) do
         if type(k) == 'number' then has_num = true
         elseif type(k) == 'string' then has_str = true
         end
-        if has_str and has_num then break end
     end
-    if has_num and not has_str then
-        local out = {}
-        local n = #val
-        if n > 0 then
-            for i = 1, n do
-                local v = val[i]
-                out['slot'..i] = (type(v) == 'table') and _clean_table(v) or v
-            end
-        else
-            for k, v in pairs(val) do
-                if type(k) == 'number' then
-                    out['slot'..k] = (type(v) == 'table') and _clean_table(v) or v
-                end
-            end
-        end
-        return out
-    elseif has_num and has_str then
-        local out = {}
-        for k, v in pairs(val) do
-            local sk = (type(k) == 'number') and ('slot'..k) or tostring(k)
-            out[sk] = (type(v) == 'table') and _clean_table(v) or v
-        end
-        return out
-    end
-    -- Pure string-keyed: clone, recurse into values that are themselves tables.
-    local out = {}
-    for k, v in pairs(val) do
-        out[k] = (type(v) == 'table') and _clean_table(v) or v
-    end
-    return out
+    return has_num and not has_str
 end
 
--- Walk every table reachable from `settings` BFS-style. For each child table
--- that has problematic keys, swap it for a cleaned copy and remember the
--- swap so we can put the originals back after the save. Skip the root
--- itself (config.save needs the table identity preserved -- see
--- settings_map[t] lookup at config.lua:335) and walk only string-keyed
--- ancestors so we don't recurse into a List's internal metadata.
-local function _problematic(t)
+local function _is_mixed_keys(t)
     local cls = (class and class(t))
-    if cls == 'List' or cls == 'Set' then return true end
+    if cls == 'List' or cls == 'Set' then return false end
     local has_str, has_num = false, false
     for k in pairs(t) do
         if type(k) == 'number' then has_num = true
@@ -263,23 +246,48 @@ local function _problematic(t)
         end
         if has_str and has_num then return true end
     end
-    return has_num   -- pure-array: still convert
+    return false
+end
+
+-- Convert a plain numeric-keyed table to a L{} List. _meta.L is the
+-- Windower List metatable; if it isn't reachable we fall back to a raw
+-- list-shaped table (still works for the user's reads).
+local function _to_list(t)
+    local out = {}
+    for i = 1, #t do out[i] = t[i] end
+    if L then
+        -- Easier: re-build via the L{} constructor so the metatable is set.
+        local lst = L{}
+        for i = 1, #t do lst:append(t[i]) end
+        return lst
+    end
+    return out
 end
 
 local function safe_save_settings()
-    -- swaps: list of { parent, key, original } tuples to restore after save.
-    local swaps = {}
+    local mixed_swaps = {}   -- swap-and-restore for mixed-key pathological tables
+
     local function walk(t)
-        -- Iterate a snapshot of keys so in-place reassignment below doesn't
-        -- skip entries on the next iteration.
         local keys = {}
         for k in pairs(t) do keys[#keys+1] = k end
         for _, k in ipairs(keys) do
             local v = t[k]
             if type(v) == 'table' then
-                if _problematic(v) then
-                    swaps[#swaps+1] = { parent = t, key = k, original = v }
-                    t[k] = _clean_table(v)
+                if _is_pure_numeric_plain(v) then
+                    -- ONE-WAY normalization: replace the plain array with a
+                    -- proper L{} List. After save, settings.sets[k] is a
+                    -- List that ipairs / # / set[i] still walk identically.
+                    t[k] = _to_list(v)
+                elseif _is_mixed_keys(v) then
+                    -- Pathological: swap to slot<n> + string-keyed copy,
+                    -- restore after save so live reads stay consistent.
+                    local clean = {}
+                    for kk, vv in pairs(v) do
+                        local sk = (type(kk) == 'number') and ('slot'..kk) or tostring(kk)
+                        clean[sk] = vv
+                    end
+                    mixed_swaps[#mixed_swaps+1] = { parent = t, key = k, original = v }
+                    t[k] = clean
                 else
                     walk(v)
                 end
@@ -290,9 +298,9 @@ local function safe_save_settings()
 
     local ok, err = pcall(config.save, settings)
 
-    -- ALWAYS restore originals, even on failure, so the next render loop
-    -- sees the live shapes (#set / ipairs() / set[i]) unchanged.
-    for _, swap in ipairs(swaps) do
+    -- Restore the mixed-key tables (the pure-numeric -> List conversion is
+    -- intentionally one-way; settings.sets[name] reads identically either way).
+    for _, swap in ipairs(mixed_swaps) do
         swap.parent[swap.key] = swap.original
     end
 
