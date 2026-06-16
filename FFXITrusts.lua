@@ -24,6 +24,7 @@ local config = require('config')
 local images = require('images')
 local texts  = require('texts')
 local res    = require('resources')
+local hotkey = require('libs/hotkey')
 
 -- Pre-build set of every trust spell ID so the action-event listener can
 -- confirm a finished cast really was a trust (not, say, your /WHM Cure).
@@ -1811,21 +1812,11 @@ windower.register_event('addon command', function(cmd, ...)
 end)
 
 -- =============================================================================
--- Keyboard — T toggles the window (matches GSUI's B-key pattern).
--- Ignores the press while chat is open so you can still type "T" in messages.
+-- Keyboard — Alt+R toggles the window (via libs/hotkey / Windower bind).
+-- Modifier+letter avoids in-game macro slots (Alt/Ctrl+0..9) and bare-letter
+-- chat conflicts. Bare T was taken by FFXITrader, so "tRust" via R.
+-- The actual bind happens in the 'load' handler below.
 -- =============================================================================
-
-local T_SCANCODE = 0x14         -- DirectInput scan code for T
-
-windower.register_event('keyboard', function(key, pressed, flags, blocked)
-    if blocked or not pressed then return end
-    if key ~= T_SCANCODE then return end
-
-    local info = windower.ffxi.get_info()
-    if info and info.chat_open then return end      -- typing in chat — let the T through
-
-    if ui.visible then ui.hide() else ui.show() end
-end)
 
 -- =============================================================================
 -- Action-event listener: track which trust spell the player actually finishes
@@ -1886,7 +1877,8 @@ windower.register_event('prerender', function()
 end)
 
 windower.register_event('load', function()
-    notify('v'.._addon.version..' loaded. Press T (or //ft) to open the window.')
+    hotkey.bind('ft', 'toggle', 'alt', 'r')
+    notify('v'.._addon.version..' loaded. Press Alt+R (or //ft) to open the window.')
     if settings.visible and _player_in_game() then ui.show() end
 end)
 
@@ -1906,6 +1898,7 @@ windower.register_event('logout', function()
 end)
 
 windower.register_event('unload', function()
+    pcall(hotkey.unbind, 'ft')
     if ui.main_bg then
         for _, row in ipairs(ui.set_rows) do
             if row.bg then row.bg:destroy() end
