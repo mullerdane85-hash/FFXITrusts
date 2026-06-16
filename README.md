@@ -2,9 +2,11 @@
 
 ## 🔑 Hotkey
 
-**Default toggle: `T`**
+**Default toggle: `Alt+R`**
 
-Press `T` in-game to show or hide the window. Disabled while the chat bar or macro editor is open so it won't fight with typing.
+Press `Alt+R` in-game to show or hide the window. Goes through Windower's `bind` system, so the keybind is automatically suppressed while the chat bar, search box, or macro editor is open — won't fight with typing.
+
+`R` for "tRust" (bare `T` is reserved for FFXITrader in the bundled set).
 
 Slash-command equivalents: `//ft`, `//ftrusts`.
 
@@ -40,7 +42,7 @@ To autoload every session, add `lua load FFXITrusts` to
 
 ## Window
 
-Press the **T key** (with chat closed) to toggle the window, or run
+Press **Alt+R** to toggle the window, or run
 `//ft`. The layout has two panels:
 
 - **Left** — list of your saved sets. Hover to preview members on the
@@ -115,8 +117,12 @@ These bit during development; documented so they don't bite again.
 ### `chat_open`, not `chatopen`
 
 `windower.ffxi.get_info().chat_open` — with underscore. The lookalike
-`chatopen` silently returns nil, so the T-key bind fires while you're
-typing in chat.
+`chatopen` silently returns nil, so any keyboard-event handler that
+relies on it fires while you're typing in chat. (No longer relevant
+to the toggle hotkey — that now routes through Windower's `bind`
+system in `libs/hotkey.lua`, which handles chat-input suppression
+automatically — but the gotcha still applies to any other
+`register_event('keyboard', ...)` handler.)
 
 ### `empty` global vs string "empty"
 
