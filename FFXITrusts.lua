@@ -11,7 +11,7 @@ with delay handling and Unity-Concord retries.
 Owns:
     * Settings file with all saved Trust sets (data/<character>.xml)
     * Window state (position, visibility, scroll)
-    * T-key keyboard hotkey for show/hide (chat-aware: suppressed
+    * Alt+R keyboard hotkey for show/hide (chat-aware: suppressed
       while chat / macro editor is open).
 ]]
 
